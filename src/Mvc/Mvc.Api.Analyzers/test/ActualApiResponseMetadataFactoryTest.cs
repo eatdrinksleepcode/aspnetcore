@@ -65,7 +65,7 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
     }
 }";
 
-            var actualResponseMetadata = await RunInspectReturnStatementSyntax(source, "TestController");
+            var actualResponseMetadata = await RunInspectReturnStatementSyntax(source, "TestController", "Get");
 
             // Assert
             Assert.Null(actualResponseMetadata);
@@ -325,36 +325,28 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
             return (result, responseMetadatas, testSource);
         }
 
-        private async Task<ActualApiResponseMetadata?> RunInspectReturnStatementSyntax([CallerMemberName]string test = null)
+        private async Task<ActualApiResponseMetadata?> RunInspectReturnStatementSyntax([CallerMemberName]string testMethod = null)
         {
-            // Arrange
             var compilation = await GetCompilation("InspectReturnExpressionTests");
-            Assert.True(ApiControllerSymbolCache.TryCreate(compilation, out var symbolCache));
-
-            var controllerType = compilation.GetTypeByMetadataName(typeof(TestFiles.InspectReturnExpressionTests.TestController).FullName);
-            var syntaxTree = controllerType.DeclaringSyntaxReferences[0].SyntaxTree;
-
-            var method = (IMethodSymbol)Assert.Single(controllerType.GetMembers(test));
-            var methodSyntax = syntaxTree.GetRoot().FindNode(method.Locations[0].SourceSpan);
-            var returnStatement = methodSyntax.DescendantNodes().OfType<ReturnStatementSyntax>().First();
-
-            return ActualApiResponseMetadataFactory.InspectReturnStatementSyntax(
-                symbolCache,
-                compilation.GetSemanticModel(syntaxTree),
-                returnStatement.Expression,
-                CancellationToken.None);
+            var testClass = typeof(TestFiles.InspectReturnExpressionTests.TestController).FullName;
+            return RunInspectReturnStatementSyntax(compilation, testClass, testMethod);
         }
 
-        private async Task<ActualApiResponseMetadata?> RunInspectReturnStatementSyntax(string source, string test)
+        private async Task<ActualApiResponseMetadata?> RunInspectReturnStatementSyntax(string source, string testClassName, string testMethod)
         {
             var project = MvcDiagnosticAnalyzerRunner.CreateProjectWithReferencesInBinDir(GetType().Assembly, new[] { source });
             var compilation = await project.GetCompilationAsync();
+            return RunInspectReturnStatementSyntax(compilation, $"{Namespace}.{testClassName}", testMethod);
+        }
+
+        private ActualApiResponseMetadata? RunInspectReturnStatementSyntax(Compilation compilation, string fullTestClass, string testMethod)
+        {
             Assert.True(ApiControllerSymbolCache.TryCreate(compilation, out var symbolCache));
 
-            var returnType = compilation.GetTypeByMetadataName($"{Namespace}.{test}");
-            var syntaxTree = returnType.DeclaringSyntaxReferences[0].SyntaxTree;
+            var controllerType = compilation.GetTypeByMetadataName(fullTestClass);
+            var syntaxTree = controllerType.DeclaringSyntaxReferences[0].SyntaxTree;
 
-            var method = (IMethodSymbol)returnType.GetMembers().First();
+            var method = (IMethodSymbol) Assert.Single(controllerType.GetMembers(testMethod));
             var methodSyntax = syntaxTree.GetRoot().FindNode(method.Locations[0].SourceSpan);
             var returnStatement = methodSyntax.DescendantNodes().OfType<ReturnStatementSyntax>().First();
 
