@@ -64,22 +64,8 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
         }
     }
 }";
-            var project = MvcDiagnosticAnalyzerRunner.CreateProjectWithReferencesInBinDir(GetType().Assembly, new[] { source });
-            var compilation = await project.GetCompilationAsync();
-            Assert.True(ApiControllerSymbolCache.TryCreate(compilation, out var symbolCache));
 
-            var returnType = compilation.GetTypeByMetadataName($"{Namespace}.TestController");
-            var syntaxTree = returnType.DeclaringSyntaxReferences[0].SyntaxTree;
-
-            var method = (IMethodSymbol)returnType.GetMembers().First();
-            var methodSyntax = syntaxTree.GetRoot().FindNode(method.Locations[0].SourceSpan);
-            var returnStatement = methodSyntax.DescendantNodes().OfType<ReturnStatementSyntax>().First();
-
-            var actualResponseMetadata = ActualApiResponseMetadataFactory.InspectReturnStatementSyntax(
-                symbolCache,
-                compilation.GetSemanticModel(syntaxTree),
-                returnStatement.Expression,
-                CancellationToken.None);
+            var actualResponseMetadata = await RunInspectReturnStatementSyntax(source, "TestController");
 
             // Assert
             Assert.Null(actualResponseMetadata);
