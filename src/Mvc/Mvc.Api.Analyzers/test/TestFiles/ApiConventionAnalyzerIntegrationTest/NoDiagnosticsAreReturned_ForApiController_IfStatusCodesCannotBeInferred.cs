@@ -4,9 +4,14 @@
     public class NoDiagnosticsAreReturned_ForApiController_IfStatusCodesCannotBeInferred : ControllerBase
     {
         [ProducesResponseType(201)]
-        public IActionResult Method(int id)
+        public IActionResult Method()
         {
-            return id == 0 ? (IActionResult)NotFound() : Ok();
+            return MethodImpl();
+        }
+
+        private IActionResult MethodImpl()
+        {
+            return Ok();
         }
     }
 }

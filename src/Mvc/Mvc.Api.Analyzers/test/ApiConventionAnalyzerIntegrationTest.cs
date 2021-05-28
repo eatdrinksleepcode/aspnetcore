@@ -167,6 +167,10 @@ namespace Test
             => RunTest(ApiDiagnosticDescriptors.API1000_ActionReturnsUndocumentedStatusCode, 202);
 
         [Fact]
+        public Task DiagnosticsAreReturned_IfMethodWithAttribute_ReturnsConditionalExpression()
+            => RunTest(ApiDiagnosticDescriptors.API1000_ActionReturnsUndocumentedStatusCode, 404);
+
+        [Fact]
         public Task DiagnosticsAreReturned_IfMethodWithAttributeReturnsValue_WithoutDocumentation()
             => RunTest(ApiDiagnosticDescriptors.API1001_ActionReturnsUndocumentedSuccessResult);
 

@@ -164,10 +164,28 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
         {
             // This is a gap in the analyzer. We're using this to document the current behavior and not an expecation.
             // Arrange & Act
-            var actualResponseMetadata = await RunInspectReturnStatementSyntax();
+            var actualResponseMetadata = (await RunInspectReturnStatementSyntaxAll()).ToArray();
 
             // Assert
-            Assert.Null(actualResponseMetadata);
+            Assert.NotNull(actualResponseMetadata);
+            Assert.Collection(
+                actualResponseMetadata,
+                metadata =>
+                {
+                    Assert.NotNull(metadata);
+                    Assert.Equal(400, metadata.Value.StatusCode);
+                },
+                metadata =>
+                {
+                    Assert.NotNull(metadata);
+                    Assert.Equal(404, metadata.Value.StatusCode);
+                },
+                metadata =>
+                {
+                    Assert.NotNull(metadata);
+                    Assert.Equal(200, metadata.Value.StatusCode);
+                }
+            );
         }
 
         [Fact]
@@ -338,19 +356,24 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
 
         private async Task<ActualApiResponseMetadata?> RunInspectReturnStatementSyntax([CallerMemberName]string testMethod = null)
         {
+            return (await RunInspectReturnStatementSyntaxAll(testMethod)).First();
+        }
+
+        private async Task<IEnumerable<ActualApiResponseMetadata?>> RunInspectReturnStatementSyntaxAll([CallerMemberName]string testMethod = null)
+        {
             var compilation = await GetCompilation("InspectReturnExpressionTests");
             var testClass = typeof(TestFiles.InspectReturnExpressionTests.TestController).FullName;
-            return RunInspectReturnStatementSyntax(compilation, testClass, testMethod);
+            return RunInspectReturnStatementSyntaxAll(compilation, testClass, testMethod);
         }
 
         private async Task<ActualApiResponseMetadata?> RunInspectReturnStatementSyntax(string source, string testClassName, string testMethod)
         {
             var project = MvcDiagnosticAnalyzerRunner.CreateProjectWithReferencesInBinDir(GetType().Assembly, new[] { source });
             var compilation = await project.GetCompilationAsync();
-            return RunInspectReturnStatementSyntax(compilation, $"{Namespace}.{testClassName}", testMethod);
+            return RunInspectReturnStatementSyntaxAll(compilation, $"{Namespace}.{testClassName}", testMethod).First();
         }
 
-        private ActualApiResponseMetadata? RunInspectReturnStatementSyntax(Compilation compilation, string fullTestClass, string testMethod)
+        private IEnumerable<ActualApiResponseMetadata?> RunInspectReturnStatementSyntaxAll(Compilation compilation, string fullTestClass, string testMethod)
         {
             Assert.True(ApiControllerSymbolCache.TryCreate(compilation, out var symbolCache));
 

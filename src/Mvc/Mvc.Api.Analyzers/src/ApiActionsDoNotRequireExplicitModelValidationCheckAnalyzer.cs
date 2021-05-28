@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System.Collections.Immutable;
+using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -116,7 +117,8 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
                     returnStatementSyntax.Expression,
                     operationAnalysisContext.CancellationToken);
 
-                if (actualMetadata == null || actualMetadata.Value.StatusCode != 400)
+                var badRequestMetadata = actualMetadata.FirstOrDefault(metadata => metadata != null && metadata.Value.StatusCode == 400);
+                if (null == badRequestMetadata)
                 {
                     return;
                 }
@@ -124,7 +126,7 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
                 var additionalLocations = new[]
                 {
                     ifStatement.GetLocation(),
-                    returnStatementSyntax.GetLocation(),
+                    badRequestMetadata.Value.ReturnExpression.GetLocation(),
                 };
 
                 operationAnalysisContext.ReportDiagnostic(

@@ -42,13 +42,16 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
                     expressionSyntax,
                     cancellationToken);
 
-                if (responseMetadata != null)
+                foreach (var metadata in responseMetadata)
                 {
-                    localActualResponseMetadata.Add(responseMetadata.Value);
-                }
-                else
-                {
-                    allReturnStatementsReadable = false;
+                    if (metadata != null)
+                    {
+                        localActualResponseMetadata.Add(metadata.Value);
+                    }
+                    else
+                    {
+                        allReturnStatementsReadable = false;
+                    }
                 }
             }
 
@@ -82,7 +85,25 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
             return allReturnStatementsReadable;
         }
 
-        internal static ActualApiResponseMetadata? InspectReturnStatementSyntax(
+        internal static IEnumerable<ActualApiResponseMetadata?> InspectReturnStatementSyntax(
+            in ApiControllerSymbolCache symbolCache,
+            SemanticModel semanticModel,
+            ExpressionSyntax returnExpression,
+            CancellationToken cancellationToken)
+        {
+            if (returnExpression.IsKind(SyntaxKind.ConditionalExpression))
+            {
+                var conditionalExpression = ((ConditionalExpressionSyntax) returnExpression);
+                return InspectReturnStatementSyntax(symbolCache, semanticModel, conditionalExpression.WhenTrue, cancellationToken)
+                    .Concat(InspectReturnStatementSyntax(symbolCache, semanticModel, conditionalExpression.WhenFalse, cancellationToken));
+            }
+            else
+            {
+                return new [] {InspectReturnStatementSyntaxSingle(symbolCache, semanticModel, returnExpression, cancellationToken)};
+            }
+        }
+
+        private static ActualApiResponseMetadata? InspectReturnStatementSyntaxSingle(
             in ApiControllerSymbolCache symbolCache,
             SemanticModel semanticModel,
             ExpressionSyntax returnExpression,
@@ -225,7 +246,7 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
         private static ITypeSymbol? GetExpressionObjectType(SemanticModel semanticModel, ExpressionSyntax expression, CancellationToken cancellationToken)
         {
             var typeInfo = semanticModel.GetTypeInfo(expression, cancellationToken);
-            
+
             return typeInfo.Type;
         }
 
