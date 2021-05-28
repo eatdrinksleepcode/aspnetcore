@@ -48,6 +48,11 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers.TestFiles.InspectReturnExpressi
             return StatusCode(statusCode);
         }
 
+        public IActionResult InspectReturnExpression_DoesNotReadConditionalExpression(int id)
+        {
+            return id == 0 ? NotFound() : Ok();
+        }
+
         public IActionResult InspectReturnExpression_FallsBackToDefaultStatusCode_WhenAppliedStatusCodeCannotBeRead()
         {
             var statusCode = StatusCodes.Status422UnprocessableEntity;

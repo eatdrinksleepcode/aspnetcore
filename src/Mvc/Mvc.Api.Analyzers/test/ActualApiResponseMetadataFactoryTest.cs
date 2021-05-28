@@ -160,6 +160,17 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
         }
 
         [Fact]
+        public async Task InspectReturnExpression_DoesNotReadConditionalExpression()
+        {
+            // This is a gap in the analyzer. We're using this to document the current behavior and not an expecation.
+            // Arrange & Act
+            var actualResponseMetadata = await RunInspectReturnStatementSyntax();
+
+            // Assert
+            Assert.Null(actualResponseMetadata);
+        }
+
+        [Fact]
         public async Task InspectReturnExpression_FallsBackToDefaultStatusCode_WhenAppliedStatusCodeCannotBeRead()
         {
             // This is a gap in the analyzer. We're using this to document the current behavior and not an expecation.
