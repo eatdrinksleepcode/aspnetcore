@@ -110,12 +110,9 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
                     return;
                 }
 
-                var returnStatementSyntax = (ReturnStatementSyntax)returnOperation.Syntax;
                 var actualMetadata = ActualApiResponseMetadataFactory.InspectReturnStatementSyntax(
                     symbolCache,
-                    semanticModel,
-                    returnStatementSyntax.Expression,
-                    operationAnalysisContext.CancellationToken);
+                    returnOperation);
 
                 var badRequestMetadata = actualMetadata.FirstOrDefault(metadata => metadata != null && metadata.Value.StatusCode == 400);
                 if (null == badRequestMetadata)
@@ -126,7 +123,7 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
                 var additionalLocations = new[]
                 {
                     ifStatement.GetLocation(),
-                    badRequestMetadata.Value.ReturnExpression.GetLocation(),
+                    badRequestMetadata.Value.ReturnExpression.Syntax.GetLocation(),
                 };
 
                 operationAnalysisContext.ReportDiagnostic(

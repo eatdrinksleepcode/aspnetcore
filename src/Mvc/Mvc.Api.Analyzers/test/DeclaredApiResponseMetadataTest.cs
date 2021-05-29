@@ -13,7 +13,7 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
 {
     public class DeclaredApiResponseMetadataTest
     {
-        private readonly ExpressionSyntax ReturnExpression = SyntaxFactory.ThisExpression();
+        private readonly IOperation ReturnExpression = null;
         private readonly AttributeData AttributeData = new TestAttributeData();
 
         [Fact]

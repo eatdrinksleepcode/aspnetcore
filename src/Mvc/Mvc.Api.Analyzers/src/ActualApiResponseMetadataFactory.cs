@@ -3,17 +3,62 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
-using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
+using Microsoft.CodeAnalysis.Operations;
 
 namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
 {
     public static class ActualApiResponseMetadataFactory
     {
         private static readonly Func<SyntaxNode, bool> _shouldDescendIntoChildren = ShouldDescendIntoChildren;
+
+        internal static bool TryGetActualResponseMetadata(
+            in ApiControllerSymbolCache symbolCache,
+            SemanticModel semanticModel,
+            OperationBlockStartAnalysisContext blockStartContext,
+            out IList<ActualApiResponseMetadata> actualResponseMetadata)
+        {
+            var localActualResponseMetadata = new List<ActualApiResponseMetadata>();
+
+            var allReturnStatementsReadable = true;
+            var localSymbolCache = symbolCache;
+
+            blockStartContext.RegisterOperationAction(returnContext =>
+            {
+                // if (returnStatementSyntax.IsMissing || returnStatementSyntax.Expression == null || returnStatementSyntax.Expression.IsMissing)
+                // {
+                //     // Ignore malformed return statements.
+                //     allReturnStatementsReadable = false;
+                //     continue;
+                // }
+
+                var returnOp = (IReturnOperation)returnContext.Operation;
+                var responseMetadata = InspectReturnStatementSyntax(
+                    localSymbolCache,
+                    returnOp.ReturnedValue);
+
+                foreach (var metadata in responseMetadata)
+                {
+                    if (metadata != null)
+                    {
+                        localActualResponseMetadata.Add(metadata.Value);
+                    }
+                    else
+                    {
+                        allReturnStatementsReadable = false;
+                    }
+                }
+            }, OperationKind.Return);
+
+            actualResponseMetadata = localActualResponseMetadata;
+
+            return allReturnStatementsReadable;
+        }
 
         /// <summary>
         /// This method looks at individual return statments and attempts to parse the status code and the return type.
@@ -26,7 +71,6 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
             in ApiControllerSymbolCache symbolCache,
             SemanticModel semanticModel,
             MethodDeclarationSyntax methodSyntax,
-            CancellationToken cancellationToken,
             out IList<ActualApiResponseMetadata> actualResponseMetadata)
         {
             var localActualResponseMetadata = new List<ActualApiResponseMetadata>();
@@ -38,9 +82,7 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
             {
                 var responseMetadata = InspectReturnStatementSyntax(
                     localSymbolCache,
-                    semanticModel,
-                    expressionSyntax,
-                    cancellationToken);
+                    semanticModel.GetOperation(expressionSyntax));
 
                 foreach (var metadata in responseMetadata)
                 {
@@ -87,73 +129,75 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
 
         internal static IEnumerable<ActualApiResponseMetadata?> InspectReturnStatementSyntax(
             in ApiControllerSymbolCache symbolCache,
-            SemanticModel semanticModel,
-            ExpressionSyntax returnExpression,
-            CancellationToken cancellationToken)
+            IReturnOperation returnOp)
         {
-            if (returnExpression.IsKind(SyntaxKind.ConditionalExpression))
+            return InspectReturnStatementSyntax(symbolCache, returnOp.ReturnedValue);
+        }
+
+        private static IEnumerable<ActualApiResponseMetadata?> InspectReturnStatementSyntax(
+            in ApiControllerSymbolCache symbolCache,
+            IOperation returnedValue)
+        {
+            if (returnedValue.Kind == OperationKind.Conditional)
             {
-                var conditionalExpression = ((ConditionalExpressionSyntax) returnExpression);
-                return InspectReturnStatementSyntax(symbolCache, semanticModel, conditionalExpression.WhenTrue, cancellationToken)
-                    .Concat(InspectReturnStatementSyntax(symbolCache, semanticModel, conditionalExpression.WhenFalse, cancellationToken));
+                var conditionalExpression = (IConditionalOperation) returnedValue;
+                return InspectReturnStatementSyntax(symbolCache, conditionalExpression.WhenTrue)
+                    .Concat(InspectReturnStatementSyntax(symbolCache, conditionalExpression.WhenFalse));
             }
             else
             {
-                return new [] {InspectReturnStatementSyntaxSingle(symbolCache, semanticModel, returnExpression, cancellationToken)};
+                return new [] {InspectReturnStatementSyntaxSingle(symbolCache, returnedValue)};
             }
         }
 
         private static ActualApiResponseMetadata? InspectReturnStatementSyntaxSingle(
             in ApiControllerSymbolCache symbolCache,
-            SemanticModel semanticModel,
-            ExpressionSyntax returnExpression,
-            CancellationToken cancellationToken)
+            IOperation returnedValue)
         {
-            var typeInfo = semanticModel.GetTypeInfo(returnExpression, cancellationToken);
-            if (typeInfo.Type == null || typeInfo.Type.TypeKind == TypeKind.Error)
+            var returnedValueType = returnedValue.Type;
+
+            if (returnedValueType.TypeKind == TypeKind.Error)
             {
                 return null;
             }
 
-            var statementReturnType = typeInfo.Type;
-
-            if (!symbolCache.IActionResult.IsAssignableFrom(statementReturnType))
+            if (!symbolCache.IActionResult.IsAssignableFrom(returnedValueType))
             {
                 // Return expression is not an instance of IActionResult. Must be returning the "model".
-                return new ActualApiResponseMetadata(returnExpression, statementReturnType);
+                return new ActualApiResponseMetadata(returnedValue, returnedValueType);
             }
 
-            var defaultStatusCodeAttribute = statementReturnType
+            var defaultStatusCodeAttribute = returnedValueType
                 .GetAttributes(symbolCache.DefaultStatusCodeAttribute, inherit: true)
                 .FirstOrDefault();
 
             var statusCode = GetDefaultStatusCode(defaultStatusCodeAttribute);
             ITypeSymbol? returnType = null;
-            switch (returnExpression)
+            switch (returnedValue)
             {
-                case InvocationExpressionSyntax invocation:
+                case IInvocationOperation invocation:
                     {
                         // Covers the 'return StatusCode(200)' case.
-                        var result = InspectMethodArguments(semanticModel, invocation.Expression, invocation.ArgumentList, cancellationToken);
+                        var result = InspectMethodArguments(invocation.TargetMethod, invocation.Arguments);
                         statusCode = result.statusCode ?? statusCode;
                         returnType = result.returnType;
                         break;
                     }
 
-                case ObjectCreationExpressionSyntax creation:
+                case IObjectCreationOperation creation:
                     {
-                        if (creation.ArgumentList == null)
+                        if (creation.Arguments == null)
                         {
-                            throw new ArgumentNullException(nameof(creation.ArgumentList));
+                            throw new ArgumentNullException(nameof(creation.Arguments));
                         }
                         // Read values from 'return new StatusCodeResult(200) case.
-                        var result = InspectMethodArguments(semanticModel, creation, creation.ArgumentList, cancellationToken);
+                        var result = InspectMethodArguments(creation.Constructor, creation.Arguments);
                         statusCode = result.statusCode ?? statusCode;
                         returnType = result.returnType;
 
                         // Read values from property assignments e.g. 'return new ObjectResult(...) { StatusCode = 200 }'.
                         // Property assignments override constructor assigned values and defaults.
-                        result = InspectInitializers(symbolCache, semanticModel, creation.Initializer, cancellationToken);
+                        result = InspectInitializers(symbolCache, creation.Initializer);
                         statusCode = result.statusCode ?? statusCode;
                         returnType = result.returnType ?? returnType;
                         break;
@@ -165,42 +209,37 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
                 return null;
             }
 
-            return new ActualApiResponseMetadata(returnExpression, statusCode.Value, returnType);
+            return new ActualApiResponseMetadata(returnedValue, statusCode.Value, returnType);
         }
 
         private static (int? statusCode, ITypeSymbol? returnType) InspectInitializers(
             in ApiControllerSymbolCache symbolCache,
-            SemanticModel semanticModel,
-            InitializerExpressionSyntax? initializer,
-            CancellationToken cancellationToken)
+            IObjectOrCollectionInitializerOperation initializer)
         {
             int? statusCode = null;
             ITypeSymbol? typeSymbol = null;
 
-            for (var i = 0; initializer != null && i < initializer.Expressions.Count; i++)
+            for (var i = 0; initializer != null && i < initializer.Initializers.Length; i++)
             {
-                var expression = initializer.Expressions[i];
+                var expression = initializer.Initializers[i];
 
-                if (!(expression is AssignmentExpressionSyntax assignment) ||
-                    !(assignment.Left is IdentifierNameSyntax identifier))
+                if (!(expression is IAssignmentOperation assignment) ||
+                    !(assignment.Target is IPropertyReferenceOperation propertyRef))
                 {
                     continue;
                 }
 
-                var symbolInfo = semanticModel.GetSymbolInfo(identifier, cancellationToken);
-                if (symbolInfo.Symbol is IPropertySymbol property)
+                var property = propertyRef.Property;
+                if (IsInterfaceImplementation(property, symbolCache.StatusCodeActionResultStatusProperty) &&
+                    TryGetExpressionStatusCode(assignment.Value, out var statusCodeValue))
                 {
-                    if (IsInterfaceImplementation(property, symbolCache.StatusCodeActionResultStatusProperty) &&
-                        TryGetExpressionStatusCode(semanticModel, assignment.Right, cancellationToken, out var statusCodeValue))
-                    {
-                        // Look for assignments to IStatusCodeActionResult.StatusCode
-                        statusCode = statusCodeValue;
-                    }
-                    else if (HasAttributeNamed(property, ApiSymbolNames.ActionResultObjectValueAttribute))
-                    {
-                        // Look for assignment to a property annotated with [ActionResultObjectValue]
-                        typeSymbol = GetExpressionObjectType(semanticModel, assignment.Right, cancellationToken);
-                    }
+                    // Look for assignments to IStatusCodeActionResult.StatusCode
+                    statusCode = statusCodeValue;
+                }
+                else if (HasAttributeNamed(property, ApiSymbolNames.ActionResultObjectValueAttribute))
+                {
+                    // Look for assignment to a property annotated with [ActionResultObjectValue]
+                    typeSymbol = GetExpressionObjectType(assignment.Value);
                 }
             }
 
@@ -208,77 +247,67 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
         }
 
         private static (int? statusCode, ITypeSymbol? returnType) InspectMethodArguments(
-            SemanticModel semanticModel,
-            ExpressionSyntax expression,
-            BaseArgumentListSyntax argumentList,
-            CancellationToken cancellationToken)
+            IMethodSymbol method,
+            ImmutableArray<IArgumentOperation> argumentList)
         {
             int? statusCode = null;
             ITypeSymbol? typeSymbol = null;
 
-            var symbolInfo = semanticModel.GetSymbolInfo(expression, cancellationToken);
-
-            if (symbolInfo.Symbol is IMethodSymbol method)
+            for (var i = 0; i < method.Parameters.Length; i++)
             {
-                for (var i = 0; i < method.Parameters.Length; i++)
+                var parameter = method.Parameters[i];
+                if (HasAttributeNamed(parameter, ApiSymbolNames.ActionResultStatusCodeAttribute))
                 {
-                    var parameter = method.Parameters[i];
-                    if (HasAttributeNamed(parameter, ApiSymbolNames.ActionResultStatusCodeAttribute))
+                    var argument = argumentList[parameter.Ordinal];
+                    if (TryGetExpressionStatusCode(argument.Value, out var statusCodeValue))
                     {
-                        var argument = argumentList.Arguments[parameter.Ordinal];
-                        if (TryGetExpressionStatusCode(semanticModel, argument.Expression, cancellationToken, out var statusCodeValue))
-                        {
-                            statusCode = statusCodeValue;
-                        }
+                        statusCode = statusCodeValue;
                     }
+                }
 
-                    if (HasAttributeNamed(parameter, ApiSymbolNames.ActionResultObjectValueAttribute))
-                    {
-                        var argument = argumentList.Arguments[parameter.Ordinal];
-                        typeSymbol = GetExpressionObjectType(semanticModel, argument.Expression, cancellationToken);
-                    }
+                if (HasAttributeNamed(parameter, ApiSymbolNames.ActionResultObjectValueAttribute))
+                {
+                    var argument = argumentList[parameter.Ordinal];
+                    typeSymbol = GetExpressionObjectType(argument.Value);
                 }
             }
 
             return (statusCode, typeSymbol);
         }
 
-        private static ITypeSymbol? GetExpressionObjectType(SemanticModel semanticModel, ExpressionSyntax expression, CancellationToken cancellationToken)
+        private static ITypeSymbol? GetExpressionObjectType(IOperation expression)
         {
-            var typeInfo = semanticModel.GetTypeInfo(expression, cancellationToken);
-
-            return typeInfo.Type;
+            return expression.Type;
         }
 
         private static bool TryGetExpressionStatusCode(
-            SemanticModel semanticModel,
-            ExpressionSyntax expression,
-            CancellationToken cancellationToken,
+            IOperation expression,
             out int statusCode)
         {
-            if (expression is LiteralExpressionSyntax literal && literal.Token.Value is int literalStatusCode)
+            // HACK ConstantValue == null
+            if (expression is ILiteralOperation literal && literal.ConstantValue.Value is int literalStatusCode)
             {
                 // Covers the 'return StatusCode(200)' case.
                 statusCode = literalStatusCode;
                 return true;
             }
 
-            if (expression is IdentifierNameSyntax || expression is MemberAccessExpressionSyntax)
+            if (expression is ILocalReferenceOperation localReference)
             {
-                var symbolInfo = semanticModel.GetSymbolInfo(expression, cancellationToken);
-
-                if (symbolInfo.Symbol is IFieldSymbol field && field.HasConstantValue && field.ConstantValue is int constantStatusCode)
+                if (localReference.Local.HasConstantValue && localReference.Local.ConstantValue is int localStatusCode)
+                {
+                    // Covers the 'return StatusCode(statusCode)' case, where 'statusCode' is a local constant.
+                    statusCode = localStatusCode;
+                    return true;
+                }
+            }
+            else if (expression is IFieldReferenceOperation fieldReference)
+            {
+                if (fieldReference.Field.HasConstantValue && fieldReference.Field.ConstantValue is int constantStatusCode)
                 {
                     // Covers the 'return StatusCode(StatusCodes.Status200OK)' case.
                     // It also covers the 'return StatusCode(StatusCode)' case, where 'StatusCode' is a constant field.
                     statusCode = constantStatusCode;
-                    return true;
-                }
-
-                if (symbolInfo.Symbol is ILocalSymbol local && local.HasConstantValue && local.ConstantValue is int localStatusCode)
-                {
-                    // Covers the 'return StatusCode(statusCode)' case, where 'statusCode' is a local constant.
-                    statusCode = localStatusCode;
                     return true;
                 }
             }

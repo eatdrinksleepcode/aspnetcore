@@ -1,12 +1,15 @@
 ﻿// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
+using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
+using Microsoft.CodeAnalysis.Operations;
 
 namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
 {
@@ -37,6 +40,23 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
 
         private void InitializeWorker(CompilationStartAnalysisContext compilationStartAnalysisContext, ApiControllerSymbolCache symbolCache)
         {
+            // compilationStartAnalysisContext.RegisterOperationBlockStartAction(blockStartContext =>
+            // {
+            //     var method = blockStartContext.OwningSymbol as IMethodSymbol;
+            //     if (method == null || !ApiControllerFacts.IsApiControllerAction(symbolCache, method))
+            //     {
+            //         return;
+            //     }
+            //
+            //     var declaredResponseMetadata = SymbolApiResponseMetadataProvider.GetDeclaredResponseMetadata(symbolCache, method);
+            //     var hasUnreadableStatusCodes = !ActualApiResponseMetadataFactory.TryGetActualResponseMetadata(symbolCache, blockStartContext.Compilation.GetSemanticModel(), (MethodDeclarationSyntax) method, out var actualResponseMetadata);
+            //
+            //     blockStartContext.RegisterOperationBlockEndAction(blockEndContext =>
+            //     {
+            //         ReportDiagnosticsForMethod(actualResponseMetadata, declaredResponseMetadata, blockEndContext.ReportDiagnostic, hasUnreadableStatusCodes, blockEndContext.OwningSymbol.Locations.FirstOrDefault());
+            //     });
+            // });
+
             compilationStartAnalysisContext.RegisterSyntaxNodeAction(syntaxNodeContext =>
             {
                 var cancellationToken = syntaxNodeContext.CancellationToken;
@@ -50,52 +70,57 @@ namespace Microsoft.AspNetCore.Mvc.Api.Analyzers
                 }
 
                 var declaredResponseMetadata = SymbolApiResponseMetadataProvider.GetDeclaredResponseMetadata(symbolCache, method);
-                var hasUnreadableStatusCodes = !ActualApiResponseMetadataFactory.TryGetActualResponseMetadata(symbolCache, semanticModel, methodSyntax, cancellationToken, out var actualResponseMetadata);
+                var hasUnreadableStatusCodes = !ActualApiResponseMetadataFactory.TryGetActualResponseMetadata(symbolCache, semanticModel, methodSyntax, out var actualResponseMetadata);
 
-                var hasUndocumentedStatusCodes = false;
-                foreach (var actualMetadata in actualResponseMetadata)
+                ReportDiagnosticsForMethod(actualResponseMetadata, declaredResponseMetadata, syntaxNodeContext.ReportDiagnostic, hasUnreadableStatusCodes, methodSyntax.Identifier.GetLocation());
+            }, SyntaxKind.MethodDeclaration);
+        }
+
+        private static void ReportDiagnosticsForMethod(IList<ActualApiResponseMetadata> actualResponseMetadata, IList<DeclaredApiResponseMetadata> declaredResponseMetadata,
+            Action<Diagnostic> reportDiagnostic, bool hasUnreadableStatusCodes, Location methodLocation)
+        {
+            var hasUndocumentedStatusCodes = false;
+            foreach (var actualMetadata in actualResponseMetadata)
+            {
+                var location = actualMetadata.ReturnExpression.Syntax.GetLocation();
+
+                if (!DeclaredApiResponseMetadata.Contains(declaredResponseMetadata, actualMetadata))
                 {
-                    var location = actualMetadata.ReturnExpression.GetLocation();
-
-                    if (!DeclaredApiResponseMetadata.Contains(declaredResponseMetadata, actualMetadata))
+                    hasUndocumentedStatusCodes = true;
+                    if (actualMetadata.IsDefaultResponse)
                     {
-                        hasUndocumentedStatusCodes = true;
-                        if (actualMetadata.IsDefaultResponse)
-                        {
-                            syntaxNodeContext.ReportDiagnostic(Diagnostic.Create(
-                                ApiDiagnosticDescriptors.API1001_ActionReturnsUndocumentedSuccessResult,
-                                location));
-                        }
-                        else
+                        reportDiagnostic(Diagnostic.Create(
+                            ApiDiagnosticDescriptors.API1001_ActionReturnsUndocumentedSuccessResult,
+                            location));
+                    }
+                    else
                     {
-                        syntaxNodeContext.ReportDiagnostic(Diagnostic.Create(
+                        reportDiagnostic(Diagnostic.Create(
                             ApiDiagnosticDescriptors.API1000_ActionReturnsUndocumentedStatusCode,
                             location,
-                               actualMetadata.StatusCode));
+                            actualMetadata.StatusCode));
                     }
                 }
-                }
+            }
 
-                if (hasUndocumentedStatusCodes || hasUnreadableStatusCodes)
+            if (hasUndocumentedStatusCodes || hasUnreadableStatusCodes)
+            {
+                // If we produced analyzer warnings about undocumented status codes, don't attempt to determine
+                // if there are documented status codes that are missing from the method body.
+                return;
+            }
+
+            for (var i = 0; i < declaredResponseMetadata.Count; i++)
+            {
+                var declaredMetadata = declaredResponseMetadata[i];
+                if (!Contains(actualResponseMetadata, declaredMetadata))
                 {
-                    // If we produced analyzer warnings about undocumented status codes, don't attempt to determine
-                    // if there are documented status codes that are missing from the method body.
-                    return;
+                    reportDiagnostic(Diagnostic.Create(
+                        ApiDiagnosticDescriptors.API1002_ActionDoesNotReturnDocumentedStatusCode,
+                        methodLocation, // TODO: make this the attribute location
+                        declaredMetadata.StatusCode));
                 }
-
-                for (var i = 0; i < declaredResponseMetadata.Count; i++)
-                {
-                    var declaredMetadata = declaredResponseMetadata[i];
-                    if (!Contains(actualResponseMetadata, declaredMetadata))
-                    {
-                        syntaxNodeContext.ReportDiagnostic(Diagnostic.Create(
-                            ApiDiagnosticDescriptors.API1002_ActionDoesNotReturnDocumentedStatusCode,
-                            methodSyntax.Identifier.GetLocation(),
-                            declaredMetadata.StatusCode));
-                    }
-                }
-
-            }, SyntaxKind.MethodDeclaration);
+            }
         }
 
         internal static bool Contains(IList<ActualApiResponseMetadata> actualResponseMetadata, DeclaredApiResponseMetadata declaredMetadata)
